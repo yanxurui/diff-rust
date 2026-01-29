@@ -1,0 +1,76 @@
+/* Delta output styling */
+.diff-view {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  background: #0d1117;
+  overflow: auto;
+  height: 100%;
+}
+
+.diff-view pre {
+  margin: 0;
+  font-family: inherit;
+  white-space: pre;
+}
+
+/* No changes message */
+.diff-view .no-changes {
+  color: #6b7280;
+  font-style: italic;
+  padding: 20px;
+  text-align: center;
+}
+
+/* Delta output container */
+.delta-output {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  background: #0d1117;
+  padding: 16px;
+}
+
+/* Diff line structure */
+.diff-line {
+  display: flex;
+  white-space: pre;
+}
+
+/* Line numbers - non-selectable */
+.line-num {
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  flex-shrink: 0;
+  color: #6e7681;
+  border-right: 1px solid #30363d;
+  padding-right: 8px;
+  margin-right: 8px;
+}
+
+/* Line content - selectable */
+.line-content {
+  flex: 1;
+  white-space: pre;
+}
+
+/* Side-by-side panel styling */
+.sbs-panel {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  background: #0d1117;
+  padding: 8px 0;
+  /* Contain selection within this panel */
+  user-select: contain;
+  -webkit-user-select: contain;
+  /* Ensure background covers full scrollable width */
+  min-width: max-content;
+}
+
+/* Diff lines should also have background for consistency */
+.sbs-panel .diff-line {
+  background: #0d1117;
+}
