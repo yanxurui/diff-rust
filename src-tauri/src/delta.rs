@@ -1,4 +1,3 @@
-use ansi_to_html::convert;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::Path;
@@ -155,6 +154,7 @@ fn generate_diff_with_delta(
 
     // Inline mode: process each line to separate line numbers from content
     let mut lines: Vec<String> = Vec::new();
+    let mut prev_line_num: Option<u32> = None;
 
     for line in ansi_output.lines() {
         // In inline mode with line numbers, delta uses │ before the content
@@ -163,19 +163,47 @@ fn generate_diff_with_delta(
             let line_num_part = &line[..pipe_pos];
             let content_part = &line[pipe_pos + '│'.len_utf8()..];
 
-            let line_num_html = convert(line_num_part).unwrap_or_else(|_| html_escape(line_num_part));
-            let content_html = convert(content_part).unwrap_or_else(|_| html_escape(content_part));
+            // Extract line number to detect gaps
+            let curr_line_num = extract_line_number(line_num_part);
+
+            // Check for gaps in line numbers (indicating hidden context)
+            if let (Some(prev), Some(curr)) = (prev_line_num, curr_line_num) {
+                if curr > prev + 1 {
+                    lines.push(create_hunk_separator());
+                }
+            }
+
+            // Update previous line number
+            if curr_line_num.is_some() {
+                prev_line_num = curr_line_num;
+            }
+
+            // Extract line-level background for continuous highlighting
+            let line_bg = extract_line_background(content_part);
+            let style = match line_bg {
+                Some(bg) => format!(" style='background:{}'", bg),
+                None => String::new(),
+            };
+
+            let line_num_html = ansi_to_html(line_num_part);
+            let content_html = ansi_to_html(content_part);
 
             // Add newline at end for proper copying
             lines.push(format!(
-                "<div class=\"diff-line\"><span class=\"line-num\">{}</span><span class=\"line-content\">{}\n</span></div>",
+                "<div class=\"diff-line\"{}><span class=\"line-num\">{}</span><span class=\"line-content\">{}\n</span></div>",
+                style,
                 line_num_html,
                 content_html
             ));
         } else {
             // No │ found, treat entire line as content (headers, separators, etc.)
-            let html = convert(line).unwrap_or_else(|_| html_escape(line));
-            lines.push(format!("<div class=\"diff-line\"><span class=\"line-content\">{}\n</span></div>", html));
+            let line_bg = extract_line_background(line);
+            let style = match line_bg {
+                Some(bg) => format!(" style='background:{}'", bg),
+                None => String::new(),
+            };
+            let html = ansi_to_html(line);
+            lines.push(format!("<div class=\"diff-line\"{}><span class=\"line-content\">{}\n</span></div>", style, html));
         }
     }
 
@@ -194,15 +222,68 @@ fn generate_diff_with_delta(
     })
 }
 
+/// Extract line number from the line number part of delta output
+fn extract_line_number(line_num_part: &str) -> Option<u32> {
+    let visible = strip_ansi_codes(line_num_part);
+    // Find the last number in the visible text (handles "  1 " format)
+    visible
+        .split_whitespace()
+        .filter_map(|s| s.parse::<u32>().ok())
+        .last()
+}
+
+/// Create a separator row to indicate hidden lines between hunks
+fn create_hunk_separator() -> String {
+    "<div class=\"diff-separator\"></div>".to_string()
+}
+
 /// Split delta's side-by-side ANSI output into left and right panels
 fn split_side_by_side_output(ansi_output: &str) -> Result<(String, String), DeltaError> {
     let mut left_lines: Vec<String> = Vec::new();
     let mut right_lines: Vec<String> = Vec::new();
+    let mut prev_left_line_num: Option<u32> = None;
+    let mut prev_right_line_num: Option<u32> = None;
 
     for line in ansi_output.lines() {
         // Delta uses │ (box drawing character) as the separator between left and right
         // Find the middle separator - it's typically at the midpoint
         if let Some((left, right)) = split_at_middle_separator(line) {
+            // Extract line numbers to detect gaps
+            let left_line_num = if let Some(pipe_pos) = left.rfind('│') {
+                extract_line_number(&left[..pipe_pos])
+            } else {
+                None
+            };
+            let right_line_num = if let Some(pipe_pos) = right.rfind('│') {
+                extract_line_number(&right[..pipe_pos])
+            } else {
+                None
+            };
+
+            // Check for gaps in line numbers (indicating hidden context)
+            let left_gap = match (prev_left_line_num, left_line_num) {
+                (Some(prev), Some(curr)) => curr > prev + 1,
+                _ => false,
+            };
+            let right_gap = match (prev_right_line_num, right_line_num) {
+                (Some(prev), Some(curr)) => curr > prev + 1,
+                _ => false,
+            };
+
+            // Insert separator if there's a gap on either side
+            if left_gap || right_gap {
+                left_lines.push(create_hunk_separator());
+                right_lines.push(create_hunk_separator());
+            }
+
+            // Update previous line numbers
+            if left_line_num.is_some() {
+                prev_left_line_num = left_line_num;
+            }
+            if right_line_num.is_some() {
+                prev_right_line_num = right_line_num;
+            }
+
             // Further split each side into line number and content at │
             let left_structured = split_line_number_and_content(&left);
             let right_structured = split_line_number_and_content(&right);
@@ -210,7 +291,7 @@ fn split_side_by_side_output(ansi_output: &str) -> Result<(String, String), Delt
             right_lines.push(right_structured);
         } else {
             // No separator found, put entire line in both panels
-            let html = convert(line).unwrap_or_else(|_| html_escape(line));
+            let html = ansi_to_html(line);
             let trimmed = trim_html_trailing_whitespace(&html);
             left_lines.push(format!("<div class=\"diff-line\"><span class=\"line-content\">{}</span></div>", trimmed));
             right_lines.push(format!("<div class=\"diff-line\"><span class=\"line-content\">{}</span></div>", trimmed));
@@ -229,6 +310,42 @@ fn split_side_by_side_output(ansi_output: &str) -> Result<(String, String), Delt
     Ok((left_html, right_html))
 }
 
+/// Extract the first background color from ANSI codes (line-level highlight)
+fn extract_line_background(ansi: &str) -> Option<String> {
+    let mut in_escape = false;
+    let mut escape_buf = String::new();
+
+    for c in ansi.chars() {
+        if c == '\x1b' {
+            in_escape = true;
+            escape_buf.clear();
+            escape_buf.push(c);
+        } else if in_escape {
+            escape_buf.push(c);
+            if c == 'm' {
+                // Parse the escape sequence for background color
+                if escape_buf.len() > 2 {
+                    let seq = &escape_buf[2..escape_buf.len() - 1];
+                    let parts: Vec<&str> = seq.split(';').collect();
+                    let mut i = 0;
+                    while i < parts.len() {
+                        if parts[i] == "48" && i + 4 < parts.len() && parts[i + 1] == "2" {
+                            // RGB background: 48;2;r;g;b
+                            let r: u8 = parts[i + 2].parse().unwrap_or(0);
+                            let g: u8 = parts[i + 3].parse().unwrap_or(0);
+                            let b: u8 = parts[i + 4].parse().unwrap_or(0);
+                            return Some(format!("#{:02x}{:02x}{:02x}", r, g, b));
+                        }
+                        i += 1;
+                    }
+                }
+                in_escape = false;
+            }
+        }
+    }
+    None
+}
+
 /// Split a panel line into line number (non-selectable) and content parts
 fn split_line_number_and_content(line: &str) -> String {
     // Line format: "│  1 │content" or "  1 │content" or just "content"
@@ -242,9 +359,12 @@ fn split_line_number_and_content(line: &str) -> String {
         let line_num_visible = strip_ansi_codes(line_num_part);
         let has_line_number = line_num_visible.chars().any(|c| c.is_ascii_digit());
 
+        // Extract line-level background color to apply to the whole line
+        let line_bg = extract_line_background(content_part);
+
         // Convert ANSI to HTML for both parts
-        let line_num_html = convert(line_num_part).unwrap_or_else(|_| html_escape(line_num_part));
-        let content_html = convert(content_part).unwrap_or_else(|_| html_escape(content_part));
+        let line_num_html = ansi_to_html(line_num_part);
+        let content_html = ansi_to_html(content_part);
 
         // Trim trailing whitespace from content
         let content_trimmed = trim_html_trailing_whitespace(&content_html);
@@ -253,50 +373,36 @@ fn split_line_number_and_content(line: &str) -> String {
         // Real empty lines have a line number but empty content - they should still get newline
         let newline = if has_line_number { "\n" } else { "" };
 
+        // Apply line background to the diff-line div for continuous highlighting
+        let style = match line_bg {
+            Some(bg) => format!(" style='background:{}'", bg),
+            None => String::new(),
+        };
+
         format!(
-            "<div class=\"diff-line\"><span class=\"line-num\">{}</span><span class=\"line-content\">{}{}</span></div>",
+            "<div class=\"diff-line\"{}><span class=\"line-num\">{}</span><span class=\"line-content\">{}{}</span></div>",
+            style,
             line_num_html.replace('│', " "),  // Clean up any remaining │ in line number area
             content_trimmed,
             newline
         )
     } else {
         // No │ found, treat entire line as content
-        let html = convert(line).unwrap_or_else(|_| html_escape(line));
+        let line_bg = extract_line_background(line);
+        let html = ansi_to_html(line);
         let trimmed = trim_html_trailing_whitespace(&html);
-        format!("<div class=\"diff-line\"><span class=\"line-content\">{}\n</span></div>", trimmed)
+        let style = match line_bg {
+            Some(bg) => format!(" style='background:{}'", bg),
+            None => String::new(),
+        };
+        format!("<div class=\"diff-line\"{}><span class=\"line-content\">{}\n</span></div>", style, trimmed)
     }
 }
 
-/// Trim trailing whitespace from HTML, handling spans that might contain only whitespace
+/// Trim trailing whitespace from HTML content
+/// Just do simple trimming - don't try to manipulate span structure
 fn trim_html_trailing_whitespace(html: &str) -> String {
-    // First, trim obvious trailing whitespace
-    let trimmed = html.trim_end();
-
-    // Remove trailing </span> tags that follow whitespace, then trim again
-    let mut result = trimmed.to_string();
-    loop {
-        let before = result.clone();
-        // Remove trailing empty spans or spans with only whitespace
-        if result.ends_with("</span>") {
-            if let Some(open_pos) = result.rfind("<span") {
-                let span_content = &result[open_pos..];
-                // Check if the span content (after the >) is just whitespace
-                if let Some(gt_pos) = span_content.find('>') {
-                    let inner = &span_content[gt_pos + 1..span_content.len() - 7]; // 7 = "</span>".len()
-                    if inner.trim().is_empty() {
-                        result = result[..open_pos].to_string();
-                        result = result.trim_end().to_string();
-                        continue;
-                    }
-                }
-            }
-        }
-        if before == result {
-            break;
-        }
-    }
-
-    result.trim_end().to_string()
+    html.trim_end().to_string()
 }
 
 /// Split a line at the middle vertical bar separator
@@ -365,6 +471,182 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Convert ANSI escape codes to HTML spans
+/// Custom implementation to fix word-level highlighting (the ansi-to-html crate has bugs)
+fn ansi_to_html(input: &str) -> String {
+    let mut result = String::new();
+    let mut current_fg: Option<String> = None;
+    let mut current_bg: Option<String> = None;
+    let mut in_escape = false;
+    let mut escape_buf = String::new();
+
+    for c in input.chars() {
+        if c == '\x1b' {
+            in_escape = true;
+            escape_buf.clear();
+            escape_buf.push(c);
+        } else if in_escape {
+            escape_buf.push(c);
+            if c == 'm' {
+                // Parse the escape sequence
+                if escape_buf.len() > 2 {
+                    let seq = &escape_buf[2..escape_buf.len() - 1]; // Remove \x1b[ and m
+                    let (new_fg, new_bg) = parse_ansi_codes(seq, &current_fg, &current_bg);
+
+                    // If colors changed, close old span and open new
+                    if new_bg != current_bg || new_fg != current_fg {
+                        if current_bg.is_some() || current_fg.is_some() {
+                            result.push_str("</span>");
+                        }
+                        current_bg = new_bg;
+                        current_fg = new_fg;
+                        if current_bg.is_some() || current_fg.is_some() {
+                            result.push_str("<span style='");
+                            if let Some(ref bg) = current_bg {
+                                result.push_str(&format!("background:{};", bg));
+                            }
+                            if let Some(ref fg) = current_fg {
+                                result.push_str(&format!("color:{};", fg));
+                            }
+                            result.push_str("'>");
+                        }
+                    }
+                }
+                in_escape = false;
+            }
+        } else {
+            // Escape HTML entities
+            match c {
+                '<' => result.push_str("&lt;"),
+                '>' => result.push_str("&gt;"),
+                '&' => result.push_str("&amp;"),
+                '"' => result.push_str("&quot;"),
+                _ => result.push(c),
+            }
+        }
+    }
+
+    // Close any remaining span
+    if current_bg.is_some() || current_fg.is_some() {
+        result.push_str("</span>");
+    }
+
+    result
+}
+
+/// Parse ANSI SGR codes and return new foreground/background colors
+fn parse_ansi_codes(
+    seq: &str,
+    current_fg: &Option<String>,
+    current_bg: &Option<String>,
+) -> (Option<String>, Option<String>) {
+    let mut fg = current_fg.clone();
+    let mut bg = current_bg.clone();
+    let parts: Vec<&str> = seq.split(';').collect();
+    let mut i = 0;
+
+    while i < parts.len() {
+        match parts[i] {
+            "0" => {
+                // Reset all attributes
+                fg = None;
+                bg = None;
+            }
+            "38" => {
+                // Foreground color
+                if i + 1 < parts.len() && parts[i + 1] == "2" && i + 4 < parts.len() {
+                    // RGB color: 38;2;r;g;b
+                    let r: u8 = parts[i + 2].parse().unwrap_or(0);
+                    let g: u8 = parts[i + 3].parse().unwrap_or(0);
+                    let b: u8 = parts[i + 4].parse().unwrap_or(0);
+                    fg = Some(format!("#{:02x}{:02x}{:02x}", r, g, b));
+                    i += 4;
+                } else if i + 1 < parts.len() && parts[i + 1] == "5" && i + 2 < parts.len() {
+                    // 256 color: 38;5;n - convert to approximate RGB
+                    let n: u8 = parts[i + 2].parse().unwrap_or(0);
+                    fg = Some(ansi_256_to_rgb(n));
+                    i += 2;
+                }
+            }
+            "48" => {
+                // Background color
+                if i + 1 < parts.len() && parts[i + 1] == "2" && i + 4 < parts.len() {
+                    // RGB color: 48;2;r;g;b
+                    let r: u8 = parts[i + 2].parse().unwrap_or(0);
+                    let g: u8 = parts[i + 3].parse().unwrap_or(0);
+                    let b: u8 = parts[i + 4].parse().unwrap_or(0);
+                    bg = Some(format!("#{:02x}{:02x}{:02x}", r, g, b));
+                    i += 4;
+                } else if i + 1 < parts.len() && parts[i + 1] == "5" && i + 2 < parts.len() {
+                    // 256 color: 48;5;n
+                    let n: u8 = parts[i + 2].parse().unwrap_or(0);
+                    bg = Some(ansi_256_to_rgb(n));
+                    i += 2;
+                }
+            }
+            // Basic colors (30-37 foreground, 40-47 background)
+            "30" => fg = Some("#000000".to_string()),
+            "31" => fg = Some("#aa0000".to_string()),
+            "32" => fg = Some("#00aa00".to_string()),
+            "33" => fg = Some("#aaaa00".to_string()),
+            "34" => fg = Some("#0000aa".to_string()),
+            "35" => fg = Some("#aa00aa".to_string()),
+            "36" => fg = Some("#00aaaa".to_string()),
+            "37" => fg = Some("#aaaaaa".to_string()),
+            "40" => bg = Some("#000000".to_string()),
+            "41" => bg = Some("#aa0000".to_string()),
+            "42" => bg = Some("#00aa00".to_string()),
+            "43" => bg = Some("#aaaa00".to_string()),
+            "44" => bg = Some("#0000aa".to_string()),
+            "45" => bg = Some("#aa00aa".to_string()),
+            "46" => bg = Some("#00aaaa".to_string()),
+            "47" => bg = Some("#aaaaaa".to_string()),
+            // Bright colors (90-97 foreground, 100-107 background)
+            "90" => fg = Some("#555555".to_string()),
+            "91" => fg = Some("#ff5555".to_string()),
+            "92" => fg = Some("#55ff55".to_string()),
+            "93" => fg = Some("#ffff55".to_string()),
+            "94" => fg = Some("#5555ff".to_string()),
+            "95" => fg = Some("#ff55ff".to_string()),
+            "96" => fg = Some("#55ffff".to_string()),
+            "97" => fg = Some("#ffffff".to_string()),
+            _ => {}
+        }
+        i += 1;
+    }
+
+    (fg, bg)
+}
+
+/// Convert ANSI 256 color code to RGB hex
+fn ansi_256_to_rgb(n: u8) -> String {
+    match n {
+        0..=15 => {
+            // Standard colors
+            let colors = [
+                "#000000", "#aa0000", "#00aa00", "#aaaa00", "#0000aa", "#aa00aa", "#00aaaa",
+                "#aaaaaa", "#555555", "#ff5555", "#55ff55", "#ffff55", "#5555ff", "#ff55ff",
+                "#55ffff", "#ffffff",
+            ];
+            colors[n as usize].to_string()
+        }
+        16..=231 => {
+            // 216 color cube: 6x6x6
+            let n = n - 16;
+            let r = (n / 36) % 6;
+            let g = (n / 6) % 6;
+            let b = n % 6;
+            let to_val = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+            format!("#{:02x}{:02x}{:02x}", to_val(r), to_val(g), to_val(b))
+        }
+        232..=255 => {
+            // Grayscale: 24 shades
+            let gray = 8 + (n - 232) * 10;
+            format!("#{:02x}{:02x}{:02x}", gray, gray, gray)
+        }
+    }
 }
 
 pub fn get_file_content(path: &Path) -> Result<String, DeltaError> {

@@ -1,0 +1,5 @@
+This file will be deleted in the new version.
+
+It contains some content that will no longer exist.
+
+Goodbye!
