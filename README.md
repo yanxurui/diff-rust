@@ -1,4 +1,4 @@
-# diffr - GUI Diff Tool
+# diff-rust - GUI Diff Tool
 
 A Tauri-based GUI diff tool with delta-quality visuals, designed for `git difftool --dir-diff` integration.
 
@@ -22,8 +22,8 @@ A Tauri-based GUI diff tool with delta-quality visuals, designed for `git diffto
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/diffr.git
-cd diffr
+git clone https://github.com/yourusername/diff-rust.git
+cd diff-rust
 
 # Install dependencies
 npm install
@@ -39,7 +39,7 @@ The built application will be in `src-tauri/target/release/bundle/`.
 ### Standalone
 
 ```bash
-diffr /path/to/old/directory /path/to/new/directory
+diff-rust /path/to/old/directory /path/to/new/directory
 ```
 
 ### Git Integration
@@ -47,8 +47,8 @@ diffr /path/to/old/directory /path/to/new/directory
 Configure as your git difftool:
 
 ```bash
-git config --global diff.tool diffr
-git config --global difftool.diffr.cmd 'diffr "$LOCAL" "$REMOTE"'
+git config --global diff.tool diff-rust
+git config --global difftool.diff-rust.cmd 'diff-rust "$LOCAL" "$REMOTE"'
 ```
 
 Then use with:

@@ -655,7 +655,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "diffr"
+name = "diff-rust"
 version = "0.1.0"
 dependencies = [
  "serde",
